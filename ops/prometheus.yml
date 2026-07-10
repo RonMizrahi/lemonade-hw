@@ -1,0 +1,16 @@
+# Prometheus scrape config skeleton (spec §11). Enabled via the optional `observability`
+# compose profile (M6 wires the /metrics endpoints, M8 wires the profile + Grafana).
+
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'onboarding-api'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['api:3000']
+
+  - job_name: 'onboarding-worker'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['worker:3001']

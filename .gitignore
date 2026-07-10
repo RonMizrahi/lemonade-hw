@@ -35,3 +35,7 @@ coverage/
 # Vite / React
 frontend/dist/
 .vite/
+
+# TypeScript build info
+**/*.tsbuildinfo
+backend/dist/
