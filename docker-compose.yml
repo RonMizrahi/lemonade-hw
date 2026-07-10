@@ -1,0 +1,56 @@
+# Onboarding App — Docker Compose skeleton.
+# M1 defines db + redis (usable now for local dev) and stubs api/worker/frontend service
+# shapes. M8 finalizes the app service builds (Dockerfiles, migrations+seed on boot, nginx)
+# and the optional `observability` profile (prometheus + grafana).
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-onboarding}
+    ports:
+      - '${DB_PORT:-5432}:5432'
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DB_USERNAME:-postgres} -d ${DB_NAME:-onboarding}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── App services below are finalized in M8 (Dockerfiles not yet present). ──
+  # api:
+  #   build: { context: ./backend }
+  #   command: sh -c "npm run migration:run && npm run seed && npm run start:prod"
+  #   environment: [ ... from .env ... ]
+  #   depends_on:
+  #     db: { condition: service_healthy }
+  #     redis: { condition: service_healthy }
+  #   ports: ['3000:3000']   # /docs, /metrics
+  #
+  # worker:
+  #   build: { context: ./backend }
+  #   command: npm run start:worker
+  #   depends_on:
+  #     db: { condition: service_healthy }
+  #     redis: { condition: service_healthy }
+  #   ports: ['3001:3001']   # worker /metrics
+  #
+  # frontend:
+  #   build: { context: ./frontend }
+  #   ports: ['8080:80']     # nginx-served static SPA
+
+volumes:
+  db_data:
