@@ -12,16 +12,21 @@ export interface PropertyLookupInput {
 }
 
 /**
- * The mock property data returned on a successful lookup (spec §7). Concrete fields are
- * finalized in M4; kept open here so the contract can evolve without touching M1.
+ * The mock property data returned on a successful lookup (spec §7).
  */
 export interface PropertyLookupResult {
-  [key: string]: unknown;
+  dataSource: 'external';
+  estimatedValue: number;
+  squareFeet: number;
+  yearBuilt: number;
+  floodZone: string;
+  roofType: string;
+  hazards: string[];
 }
 
 /**
  * The simulated slow external property service (spec §4, §7): random 3–8s delay and ~10%
- * failure, both injectable for deterministic tests. M4 provides the real implementation.
+ * failure, both injectable for deterministic tests.
  */
 export interface SimulatedPropertyService {
   /**

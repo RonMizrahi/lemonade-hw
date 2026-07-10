@@ -7,6 +7,7 @@ import { runMigrations, startPostgres, StartedPostgres } from './setup/postgres-
 
 const NOT_IMPLEMENTED = 501;
 const BAD_REQUEST = 400;
+const NOT_FOUND = 404;
 
 describe('Onboarding routes (Testcontainers Postgres)', () => {
   let coords: StartedPostgres;
@@ -63,13 +64,13 @@ describe('Onboarding routes (Testcontainers Postgres)', () => {
     expectErrorShape(res.body, NOT_IMPLEMENTED);
   });
 
-  it('POST /onboarding/sessions/:id/external-lookup/retry is wired (501 stub, error shape)', async () => {
+  it('POST /onboarding/sessions/:id/external-lookup/retry is implemented (404 for unknown session, error shape)', async () => {
     const res = await request(httpServer(app))
       .post(`/onboarding/sessions/${randomUUID()}/external-lookup/retry`)
       .set('Idempotency-Key', randomUUID());
 
-    expect(res.status).toBe(NOT_IMPLEMENTED);
-    expectErrorShape(res.body, NOT_IMPLEMENTED);
+    expect(res.status).toBe(NOT_FOUND);
+    expectErrorShape(res.body, NOT_FOUND);
   });
 
   it('POST /onboarding/sessions/:id/complete is wired (501 stub, error shape)', async () => {

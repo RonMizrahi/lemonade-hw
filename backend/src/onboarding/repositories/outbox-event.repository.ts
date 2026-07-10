@@ -53,4 +53,23 @@ export class OutboxEventRepository {
       take: limit,
     });
   }
+
+  /**
+   * Claims the oldest pending events with `FOR UPDATE SKIP LOCKED` so concurrent relays
+   * never publish the same row twice (spec §7). Must run inside the caller's transaction.
+   * @param limit the maximum number of rows to claim
+   * @param manager the transactional EntityManager holding the lock
+   * @returns the locked pending events, oldest first
+   */
+  async claimPendingForUpdate(limit: number, manager: EntityManager): Promise<OutboxEvent[]> {
+    return manager
+      .getRepository(OutboxEvent)
+      .createQueryBuilder('event')
+      .setLock('pessimistic_write')
+      .setOnLocked('skip_locked')
+      .where('event.status = :status', { status: OutboxStatus.Pending })
+      .orderBy('event.created_at', 'ASC')
+      .take(limit)
+      .getMany();
+  }
 }
