@@ -5,12 +5,17 @@ import {
   Inject,
   Injectable,
   NotFoundException,
-  NotImplementedException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { DataSource, EntityManager } from 'typeorm';
 import { AnswerStatus, ExternalLookupStatus, SessionStatus } from '../common/enums';
-import { Answer, ExternalLookup, IdempotencyKey, OnboardingSession } from '../database/entities';
+import {
+  Answer,
+  ExternalLookup,
+  IdempotencyKey,
+  OnboardingSession,
+  SessionSummary,
+} from '../database/entities';
 import { ACTIVE_FLOW_VERSION, FLOW_DEFINITION } from '../flow-engine/flow-definition';
 import { FLOW_ENGINE, FlowEngine } from '../flow-engine/flow-engine.interface';
 import { AnswerMap } from '../flow-engine/flow.types';
@@ -25,6 +30,7 @@ import {
 } from './repositories';
 import { OutboxWriter } from './outbox/outbox-writer';
 import { SessionStateAssembler } from './session-state.assembler';
+import { SummaryBuilder } from './summary-builder';
 import { SessionStateDto } from './contract';
 
 /**
@@ -63,6 +69,7 @@ export class OnboardingService {
     private readonly idempotencyKeys: IdempotencyKeyRepository,
     private readonly outboxWriter: OutboxWriter,
     private readonly assembler: SessionStateAssembler,
+    private readonly summaryBuilder: SummaryBuilder,
     private readonly lookupTrigger: LookupTriggerService,
     @Inject(FLOW_ENGINE) private readonly flowEngine: FlowEngine,
   ) {}
@@ -243,15 +250,105 @@ export class OnboardingService {
   }
 
   /**
-   * Completes the session once all gates pass, building the summary (spec §6, §9).
+   * Completes the session once all gates pass, building the normalized summary (spec §6, §9).
+   * In one transaction: idempotent short-circuit for an already-completed session, version
+   * check, completion gates (all required visible questions answered + the lookup terminal),
+   * summary build+persist, and the terminal `status`/`completed_at` transition.
    * @param sessionId the session id
    * @param expectedVersion the client's last-observed version
    * @returns the completed session state with summary
-   * @throws NotImplementedException until implemented in M5
+   * @throws NotFoundException when the session does not exist
+   * @throws ConflictException on a stale version, unmet requirements, or a non-terminal lookup
    */
   async complete(sessionId: string, expectedVersion: number): Promise<SessionStateDto> {
-    void [sessionId, expectedVersion];
-    throw new NotImplementedException('complete is implemented in M5');
+    return this.dataSource.transaction(async (manager) => {
+      const session = await this.sessions.findById(sessionId, manager);
+      if (!session) {
+        throw new NotFoundException('Session not found');
+      }
+      if (session.status === SessionStatus.Completed) {
+        return this.buildState(manager, sessionId);
+      }
+      if (session.version !== expectedVersion) {
+        throw new ConflictException('expectedVersion is stale');
+      }
+
+      const answers = await this.answers.findBySession(sessionId, manager);
+      const lookup = await this.lookups.findBySession(sessionId, manager);
+      this.assertCompletable(answers, lookup);
+
+      const summary = this.summaryBuilder.build(answers, lookup);
+      await this.markCompleted(manager, session, summary);
+
+      return this.buildState(manager, sessionId);
+    });
+  }
+
+  /**
+   * Persists the terminal completion transition with an optimistic-lock guard: one conditional
+   * UPDATE sets `summary`/`status`/`completed_at` and bumps the version, keyed on `id AND
+   * version`. A zero-row result means a concurrent write moved the version between the read and
+   * here (a rival completion or edit), so completion is rejected rather than clobbering it.
+   * @param manager the enclosing transaction
+   * @param session the session whose version was validated against `expectedVersion`
+   * @param summary the normalized summary to persist
+   * @returns resolves once the completion is committed
+   * @throws ConflictException when the guarded update matched no row (concurrent write)
+   */
+  private async markCompleted(
+    manager: EntityManager,
+    session: OnboardingSession,
+    summary: SessionSummary,
+  ): Promise<void> {
+    const result = await manager
+      .getRepository(OnboardingSession)
+      .createQueryBuilder()
+      .update(OnboardingSession)
+      .set({
+        // The jsonb summary is opaque to TypeORM's deep-partial (its `unknown` values don't
+        // satisfy the mapped type); a JSON string literal is the sanctioned ORM-type escape,
+        // cast at the DB boundary via `::jsonb` so Postgres stores it as structured data.
+        summary: () => ':summary::jsonb',
+        status: SessionStatus.Completed,
+        completedAt: () => 'now()',
+        version: () => 'version + 1',
+      })
+      .where('id = :id AND version = :version', { id: session.id, version: session.version })
+      .setParameters({ summary: JSON.stringify(summary) })
+      .execute();
+    if (result.affected === 0) {
+      throw new ConflictException('expectedVersion is stale');
+    }
+  }
+
+  /**
+   * Asserts the completion gates (spec §9): every required visible question has an active
+   * answer, and the external lookup is terminal (`completed` or `permanently_failed`).
+   * @param answers all stored answers for the session
+   * @param lookup the session's lookup row, or null if never triggered
+   * @throws ConflictException when a required answer is missing or the lookup is not terminal
+   */
+  private assertCompletable(answers: Answer[], lookup: ExternalLookup | null): void {
+    const answerMap = this.toActiveAnswerMap(answers);
+    const missingRequired = this.flowEngine.completionChecklist(FLOW_DEFINITION, answerMap);
+    if (missingRequired.length > 0) {
+      throw new ConflictException(`Required questions unanswered: ${missingRequired.join(', ')}`);
+    }
+    if (!this.isLookupTerminal(lookup)) {
+      throw new ConflictException('External lookup has not resolved');
+    }
+  }
+
+  /**
+   * Whether the external lookup has reached a completion-unblocking terminal state (spec §9).
+   * @param lookup the session's lookup row, or null if never triggered
+   * @returns true when the lookup is `completed` or `permanently_failed`
+   */
+  private isLookupTerminal(lookup: ExternalLookup | null): boolean {
+    return (
+      lookup?.status === ExternalLookupStatus.Completed ||
+      lookup?.status === ExternalLookupStatus.PermanentlyFailed
+    );
   }
 
   /**
