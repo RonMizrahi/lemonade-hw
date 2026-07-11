@@ -24,7 +24,7 @@ describe('SummaryView', () => {
   it('flattens object values (e.g. address) into labelled pairs', () => {
     render(
       <SummaryView
-        summary={{ property_address: { line1: '1 Main St', city: 'Springfield' } }}
+        summary={{ property_address: { street: '1 Main St', city: 'Springfield' } }}
       />,
     );
     expect(screen.getByText(/1 Main St/)).toBeInTheDocument();

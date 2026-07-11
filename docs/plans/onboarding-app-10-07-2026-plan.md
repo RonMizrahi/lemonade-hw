@@ -187,8 +187,48 @@ name the work and the section to follow.
 - `docker compose up` runs the whole system; `/docs` and `/metrics` reachable.
 - Plan closed out (Phase 3) and QA signed off (Phase 4).
 
-## Next action
-**User runs `/batch` and asks it to load `plan-guidelines`**, pointing at this plan. `/batch`
-builds **M1 (Foundation) first and merges it**, then fans out M2/M4/M6/M7 in parallel with
-M3→M5 and M8 sequenced per the dependency graph — each worktree agent running its milestone's
-test steps + `code-quality-pipeline` before opening its PR.
+## Execution Record (close-out — 2026-07-11)
+
+**Executed via `/batch` + `plan-guidelines`. All 8 milestones DONE and merged to `main`.**
+
+| Milestone | Status | PR | Notes |
+|---|---|---|---|
+| M1 Foundation & Scaffold | ✅ DONE | [#1](https://github.com/RonMizrahi/lemonade-hw/pull/1) | Wave 0 (inline); froze deps + all-route stubs |
+| M2 Flow Engine (pure) | ✅ DONE | [#2](https://github.com/RonMizrahi/lemonade-hw/pull/2) | Wave 1 (parallel); 59 unit specs |
+| M3 Answer Flow | ✅ DONE | [#6](https://github.com/RonMizrahi/lemonade-hw/pull/6) | Wave 2 |
+| M4 Async Lookup Pipeline | ✅ DONE | [#5](https://github.com/RonMizrahi/lemonade-hw/pull/5) | Wave 1 (parallel) |
+| M5 Completion (+ backend e2e) | ✅ DONE | [#7](https://github.com/RonMizrahi/lemonade-hw/pull/7) | Wave 2; 2 e2e journeys |
+| M6 Observability (Swagger+metrics) | ✅ DONE | [#4](https://github.com/RonMizrahi/lemonade-hw/pull/4) | Wave 1 (parallel) |
+| M7 Frontend Wizard | ✅ DONE | [#3](https://github.com/RonMizrahi/lemonade-hw/pull/3) | Wave 1 (parallel); 37 tests |
+| M8 Ops, CI & Docs | ✅ DONE | [#8](https://github.com/RonMizrahi/lemonade-hw/pull/8) | Wave 3; full compose smoke passed |
+
+### Verification results
+- **Integrated `main`:** build ✓ · **unit 114** ✓ · **integration 41** ✓ (Testcontainers Postgres+Redis) · **e2e 2** ✓ (happy-path + failure→retry→permanent→fallback).
+- **Docker Compose smoke (M8, live):** db+redis+api+worker+frontend healthy; async outbox→queue→worker pipeline completed end-to-end; `/docs`, api+worker `/metrics`, SPA all 200; `--profile observability` scraped both targets `up`. `docker compose config` valid (default + observability).
+
+### Key decisions / deviations from the plan
+- **Foundation froze all shared state** (installed the full dependency set + stubbed all 6 routes + wired every provider) so the Wave-1 fan-out touched only disjoint files — zero merge conflicts across 8 PRs.
+- **Optimistic locking** implemented as a **guarded conditional `UPDATE ... WHERE id AND version`** (not `repo.save()`, which doesn't enforce the version guard) — a real bug caught by M5's code-review.
+- **M3 refactored `retryLookup`** (originally M4) to share unified idempotency helpers with submit; behavior preserved, M4's tests still green.
+- **Compose `api`** runs migrations + seed against the **compiled `dist/`** (typeorm CLI + `node dist/database/seed.js`), keeping the slim prod image devDependency-free.
+- **Two subagents (Foundation, M3) hit account session limits mid-run**; the coordinator verified their worktrees and completed the close-out (commit/PR) manually — no work lost.
+- **Background security review:** 3 findings (compose default creds, frontend Dockerfile, grafana datasource) — all **accepted-by-design (local-dev; auth is a scoped-out non-goal) or false positives**. No code change.
+
+### QA verdict (Phase 4)
+
+Independent `qa-engineer` live-probe of the running docker stack (real HTTP + Playwright).
+
+**Initial verdict: BLOCK.** The backend passed hard adversarial testing — no injection/`$`-operator/XSS execution, no serialization leak (only documented DTO fields), clean `{statusCode,error,message,details?}` on every path, correct 400/404/409/422 across validation/protocol/concurrency, cross-session isolation intact, no enumeration endpoint (no-auth is the documented by-design characteristic). But it found real defects:
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| S1 | **BLOCKER** | Frontend emitted `{line1,…}` for `property_address`; backend `isAddress()` requires `{street,…}` → every UI journey hard-failed at the always-visible address step (blocking the core async lookup too). Slipped through because backend tests used `street` and frontend tests mocked the API. | **FIXED** — aligned the frontend to `street` (`QuestionInput.tsx` + its tests). Verified live: address submit 200 + lookup fires; deployed bundle has 0 `line1`/6 `street`. |
+| S2 | **MAJOR** | Two concurrent submits with the same `Idempotency-Key` → one returned HTTP 500 (unhandled `idempotency_key`/answer unique-constraint race). | **FIXED** — `runIdempotent()` catches the 23505 unique-violation and replays the winner's committed response (or 422 on hash mismatch). Regression tests added (integration, real Postgres); verified live → [200,200]. |
+| S3 | minor | Oversized answer value (200k chars) → 500 instead of 400/413 (no length/body guard). | **Follow-up** (documented) — add an input-length / body-size guard. Low real-world risk; masked 500, no leak/corruption. |
+| S3 | minor | §11 custom business counters (`answers_submitted_total`, `external_lookup_*`, `outbox_events_published_total`) read 0 at runtime — registered by M6 but never `.inc()`/`.observe()`'d (the increment wiring fell between milestones). `http_request_duration_seconds` + `bullmq_queue_depth` do work. | **Follow-up** (documented) — wire the increments into the submit/trigger/relay/processor call sites. Bonus feature; functionality unaffected. |
+
+**Re-hand-over verdict: PASS-WITH-ISSUES.** Both S1 (blocker) and S2 (major) fixed, regression-tested, and re-verified live on the rebuilt stack. The two S3s are accepted as documented follow-ups per the Phase-4 gate. Final test pyramid: **unit 114 · integration 43 · e2e 2**, all green.
+
+### Documented follow-ups (S3)
+1. Guard oversized answer values (max length / body size) → clean 400/413 instead of 500.
+2. Wire the §11 custom metric increments at their call sites (submit → `answers_submitted_total`; trigger → `external_lookup_triggers_total`; relay → `outbox_events_published_total`; processor → `external_lookup_total{status}` + `external_lookup_duration_seconds`).

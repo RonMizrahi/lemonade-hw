@@ -40,8 +40,8 @@ describe('App — money-path onboarding journey (mocked API)', () => {
     await user.click(screen.getByRole('button', { name: /continue/i }));
 
     // property_address — this triggers the lookup.
-    await screen.findByLabelText('line1');
-    await user.type(screen.getByLabelText('line1'), '1 Main St');
+    await screen.findByLabelText('street');
+    await user.type(screen.getByLabelText('street'), '1 Main St');
     await user.type(screen.getByLabelText('city'), 'Springfield');
     await user.type(screen.getByLabelText('state'), 'IL');
     await user.type(screen.getByLabelText('postalCode'), '62704');
