@@ -1,14 +1,19 @@
 import { createHash } from 'node:crypto';
 import {
+  BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
   NotImplementedException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { DataSource, EntityManager } from 'typeorm';
-import { ExternalLookupStatus } from '../common/enums';
-import { ExternalLookup, IdempotencyKey } from '../database/entities';
+import { AnswerStatus, ExternalLookupStatus, SessionStatus } from '../common/enums';
+import { Answer, ExternalLookup, IdempotencyKey, OnboardingSession } from '../database/entities';
+import { ACTIVE_FLOW_VERSION, FLOW_DEFINITION } from '../flow-engine/flow-definition';
+import { FLOW_ENGINE, FlowEngine } from '../flow-engine/flow-engine.interface';
+import { AnswerMap } from '../flow-engine/flow.types';
 import { LookupTriggerService } from '../async-lookup/lookup-trigger.service';
 import {
   AnswerRepository,
@@ -32,12 +37,19 @@ export interface WriteContext {
 /** HTTP status stored for a retry idempotency replay (202 Accepted, spec §6). */
 const RETRY_STATUS_CODE = 202;
 
+/** HTTP status stored for a submit idempotency replay (200 OK, spec §6). */
+const SUBMIT_STATUS_CODE = 200;
+
+/** The address question whose answer fires the external property lookup (spec §3, §7). */
+const ADDRESS_QUESTION_ID = 'property_address';
+
 /**
  * Orchestrates the onboarding use-cases (start, get-state, submit, edit, retry, complete),
  * coordinating the FlowEngine, repositories, OutboxWriter, and transactions (spec §2).
  *
- * M1 wires every dependency but leaves the use-case bodies as `NotImplementedException`
- * stubs — the answer-flow (M3), async (M4), and completion (M5) milestones fill them in.
+ * The answer-flow use-cases (M3) run each write in ONE transaction: optimistic-lock check,
+ * FlowEngine validation, answer upsert, the transactional lookup trigger on the address
+ * answer (spec §7 stage 1), a version bump, and idempotent replay for POST submit (spec §6).
  */
 @Injectable()
 export class OnboardingService {
@@ -52,37 +64,58 @@ export class OnboardingService {
     private readonly outboxWriter: OutboxWriter,
     private readonly assembler: SessionStateAssembler,
     private readonly lookupTrigger: LookupTriggerService,
+    @Inject(FLOW_ENGINE) private readonly flowEngine: FlowEngine,
   ) {}
 
   /**
    * Starts a new session pinned to the active flow version (spec §6).
-   * @returns the initial session state
-   * @throws NotImplementedException until implemented in M3
+   * @returns the initial session state (first question)
+   * @throws NotFoundException when the active flow version is not registered (run the seed)
    */
   async startSession(): Promise<SessionStateDto> {
-    throw new NotImplementedException('startSession is implemented in M3');
+    return this.dataSource.transaction(async (manager) => {
+      const flowVersion = await this.flowVersions.findByVersion(ACTIVE_FLOW_VERSION, manager);
+      if (!flowVersion) {
+        throw new NotFoundException('Active flow version is not registered');
+      }
+      const session = await this.sessions.create(
+        { status: SessionStatus.InProgress, flowVersionId: flowVersion.id },
+        manager,
+      );
+      return this.buildState(manager, session.id);
+    });
   }
 
   /**
    * Fetches the current session state (polling target, spec §6).
    * @param sessionId the session id
    * @returns the session state
-   * @throws NotImplementedException until implemented in M3
+   * @throws NotFoundException when the session does not exist
    */
   async getState(sessionId: string): Promise<SessionStateDto> {
-    void sessionId;
-    throw new NotImplementedException('getState is implemented in M3');
+    const session = await this.sessions.findById(sessionId);
+    if (!session) {
+      throw new NotFoundException('Session not found');
+    }
+    const answers = await this.answers.findBySession(sessionId);
+    const lookup = await this.lookups.findBySession(sessionId);
+    return this.assembler.assemble({ session, answers, lookup });
   }
 
   /**
-   * Submits an answer to the current question (idempotent, optimistically locked, spec §6).
+   * Submits an answer to the current question (idempotent, optimistically locked, spec §6, §7).
+   * In one transaction: replay guard, version check, FlowEngine validation, current-question
+   * enforcement, answer upsert, the transactional address trigger, and a version bump.
    * @param sessionId the session id
    * @param questionId the question being answered
    * @param value the answer value
    * @param expectedVersion the client's last-observed version
-   * @param context the idempotency context
+   * @param context the idempotency context (the `Idempotency-Key` header)
    * @returns the recalculated session state
-   * @throws NotImplementedException until implemented in M3
+   * @throws NotFoundException when the session does not exist
+   * @throws BadRequestException when the value is invalid for the question
+   * @throws ConflictException on a stale version or a non-current question
+   * @throws UnprocessableEntityException on `Idempotency-Key` reuse with a different request
    */
   async submitAnswer(
     sessionId: string,
@@ -91,18 +124,50 @@ export class OnboardingService {
     expectedVersion: number,
     context: WriteContext,
   ): Promise<SessionStateDto> {
-    void [sessionId, questionId, value, expectedVersion, context];
-    throw new NotImplementedException('submitAnswer is implemented in M3');
+    const requestHash = this.hashSubmitRequest(sessionId, questionId, value, expectedVersion);
+    return this.dataSource.transaction(async (manager) => {
+      const replay = await this.replayIfPresent(manager, context.idempotencyKey, requestHash);
+      if (replay) {
+        return replay;
+      }
+
+      const session = await this.loadSessionForWrite(manager, sessionId, expectedVersion);
+      const answerMap = await this.activeAnswerMap(manager, sessionId);
+
+      this.assertCurrentQuestion(answerMap, questionId);
+      this.assertValid(questionId, value, answerMap);
+
+      await this.upsertAnswer(manager, sessionId, questionId, value);
+      if (questionId === ADDRESS_QUESTION_ID) {
+        await this.lookupTrigger.trigger(manager, sessionId, true);
+      }
+      await this.bumpVersion(manager, session);
+
+      const state = await this.buildState(manager, sessionId);
+      await this.storeIdempotency(
+        manager,
+        context.idempotencyKey,
+        sessionId,
+        requestHash,
+        state,
+        SUBMIT_STATUS_CODE,
+      );
+      return state;
+    });
   }
 
   /**
-   * Edits a prior answer and recalculates the flow (spec §6, §8).
+   * Edits a prior answer and recalculates the flow (spec §6, §8). In one transaction: version
+   * check, FlowEngine validation, answer upsert, reconciliation (marking now-hidden answers
+   * `irrelevant`), an address-change re-trigger, and a version bump.
    * @param sessionId the session id
    * @param questionId the question being edited
    * @param value the new answer value
    * @param expectedVersion the client's last-observed version
    * @returns the recalculated session state
-   * @throws NotImplementedException until implemented in M3
+   * @throws NotFoundException when the session or the prior answer does not exist
+   * @throws BadRequestException when the value is invalid for the question
+   * @throws ConflictException on a stale version
    */
   async editAnswer(
     sessionId: string,
@@ -110,8 +175,29 @@ export class OnboardingService {
     value: unknown,
     expectedVersion: number,
   ): Promise<SessionStateDto> {
-    void [sessionId, questionId, value, expectedVersion];
-    throw new NotImplementedException('editAnswer is implemented in M3');
+    return this.dataSource.transaction(async (manager) => {
+      const session = await this.loadSessionForWrite(manager, sessionId, expectedVersion);
+
+      const existing = await this.answers.findByQuestion(sessionId, questionId, manager);
+      if (!existing || existing.status !== AnswerStatus.Active) {
+        throw new NotFoundException(`Question was not answered: ${questionId}`);
+      }
+
+      const answerMap = await this.activeAnswerMap(manager, sessionId);
+      this.assertValid(questionId, value, answerMap);
+
+      const addressChanged =
+        questionId === ADDRESS_QUESTION_ID && !this.sameValue(existing.value, value);
+
+      await this.upsertAnswer(manager, sessionId, questionId, value);
+      await this.reconcileIrrelevant(manager, sessionId);
+      if (addressChanged) {
+        await this.lookupTrigger.trigger(manager, sessionId, true);
+      }
+      await this.bumpVersion(manager, session);
+
+      return this.buildState(manager, sessionId);
+    });
   }
 
   /**
@@ -144,7 +230,14 @@ export class OnboardingService {
       await this.lookupTrigger.trigger(manager, sessionId, false);
 
       const state = await this.buildState(manager, sessionId);
-      await this.storeIdempotency(manager, context.idempotencyKey, sessionId, requestHash, state);
+      await this.storeIdempotency(
+        manager,
+        context.idempotencyKey,
+        sessionId,
+        requestHash,
+        state,
+        RETRY_STATUS_CODE,
+      );
       return state;
     });
   }
@@ -159,6 +252,159 @@ export class OnboardingService {
   async complete(sessionId: string, expectedVersion: number): Promise<SessionStateDto> {
     void [sessionId, expectedVersion];
     throw new NotImplementedException('complete is implemented in M5');
+  }
+
+  /**
+   * Loads the session under the transaction and asserts its version matches the caller's.
+   * @param manager the enclosing transaction
+   * @param sessionId the session id
+   * @param expectedVersion the client's last-observed version
+   * @returns the loaded session
+   * @throws NotFoundException when the session does not exist
+   * @throws ConflictException when the stored version differs (a concurrent write landed first)
+   */
+  private async loadSessionForWrite(
+    manager: EntityManager,
+    sessionId: string,
+    expectedVersion: number,
+  ): Promise<OnboardingSession> {
+    const session = await this.sessions.findById(sessionId, manager);
+    if (!session) {
+      throw new NotFoundException('Session not found');
+    }
+    if (session.version !== expectedVersion) {
+      throw new ConflictException('expectedVersion is stale');
+    }
+    return session;
+  }
+
+  /**
+   * Bumps the session's optimistic-lock version with a guarded conditional update; a zero-row
+   * result means a concurrent write moved the version between the read and here (spec §6).
+   * @param manager the enclosing transaction
+   * @param session the session whose version was validated against `expectedVersion`
+   * @returns resolves once the version is bumped
+   * @throws ConflictException when the guarded update matched no row (concurrent write)
+   */
+  private async bumpVersion(manager: EntityManager, session: OnboardingSession): Promise<void> {
+    const result = await manager
+      .getRepository(OnboardingSession)
+      .createQueryBuilder()
+      .update(OnboardingSession)
+      .set({ version: () => 'version + 1' })
+      .where('id = :id AND version = :version', { id: session.id, version: session.version })
+      .execute();
+    if (result.affected === 0) {
+      throw new ConflictException('expectedVersion is stale');
+    }
+  }
+
+  /**
+   * Asserts the question being answered is the session's current (first visible & unanswered).
+   * @param answerMap the current active answer map
+   * @param questionId the question the client is answering
+   * @throws ConflictException when it is not the current question (out-of-order submit)
+   */
+  private assertCurrentQuestion(answerMap: AnswerMap, questionId: string): void {
+    const current = this.flowEngine.currentQuestion(FLOW_DEFINITION, answerMap);
+    if (!current || current.id !== questionId) {
+      throw new ConflictException(`Not the current question: ${questionId}`);
+    }
+  }
+
+  /**
+   * Runs the FlowEngine validation for a proposed answer value.
+   * @param questionId the question being answered
+   * @param value the proposed value
+   * @param answerMap the current active answer map (excluding this write)
+   * @throws BadRequestException when the value is invalid for the question
+   */
+  private assertValid(questionId: string, value: unknown, answerMap: AnswerMap): void {
+    const result = this.flowEngine.validateAnswer(FLOW_DEFINITION, questionId, value, answerMap);
+    if (!result.valid) {
+      throw new BadRequestException(result.error ?? 'Invalid answer');
+    }
+  }
+
+  /**
+   * Upserts an answer (active), keyed on (session, question). Reactivates an `irrelevant` row.
+   * @param manager the enclosing transaction
+   * @param sessionId the owning session id
+   * @param questionId the question id
+   * @param value the answer value
+   * @returns resolves once persisted
+   */
+  private async upsertAnswer(
+    manager: EntityManager,
+    sessionId: string,
+    questionId: string,
+    value: unknown,
+  ): Promise<void> {
+    const existing = await this.answers.findByQuestion(sessionId, questionId, manager);
+    if (existing) {
+      existing.value = value;
+      existing.status = AnswerStatus.Active;
+      await this.answers.save(existing, manager);
+      return;
+    }
+    await this.answers.create(
+      { sessionId, questionId, value, status: AnswerStatus.Active },
+      manager,
+    );
+  }
+
+  /**
+   * Marks any active answers now hidden by the current answer set as `irrelevant` (spec §8).
+   * @param manager the enclosing transaction
+   * @param sessionId the owning session id
+   * @returns resolves once all now-hidden answers are soft-marked
+   */
+  private async reconcileIrrelevant(manager: EntityManager, sessionId: string): Promise<void> {
+    const answers = await this.answers.findBySession(sessionId, manager);
+    const answerMap = this.toActiveAnswerMap(answers);
+    const irrelevantIds = new Set(this.flowEngine.reconcile(FLOW_DEFINITION, answerMap));
+    for (const answer of answers) {
+      if (answer.status === AnswerStatus.Active && irrelevantIds.has(answer.questionId)) {
+        answer.status = AnswerStatus.Irrelevant;
+        await this.answers.save(answer, manager);
+      }
+    }
+  }
+
+  /**
+   * Loads the session's active answers as a FlowEngine answer map.
+   * @param manager the enclosing transaction
+   * @param sessionId the owning session id
+   * @returns questionId → value map of active answers
+   */
+  private async activeAnswerMap(manager: EntityManager, sessionId: string): Promise<AnswerMap> {
+    const answers = await this.answers.findBySession(sessionId, manager);
+    return this.toActiveAnswerMap(answers);
+  }
+
+  /**
+   * Projects active answers into a FlowEngine answer map (irrelevant answers excluded).
+   * @param answers all stored answers for the session
+   * @returns questionId → value map of active answers
+   */
+  private toActiveAnswerMap(answers: Answer[]): AnswerMap {
+    const map: AnswerMap = {};
+    for (const answer of answers) {
+      if (answer.status === AnswerStatus.Active) {
+        map[answer.questionId] = answer.value;
+      }
+    }
+    return map;
+  }
+
+  /**
+   * Structural equality for two normalized answer values (used to detect an address change).
+   * @param a the first value
+   * @param b the second value
+   * @returns whether the two values are equal by JSON serialization
+   */
+  private sameValue(a: unknown, b: unknown): boolean {
+    return JSON.stringify(a) === JSON.stringify(b);
   }
 
   /**
@@ -209,6 +455,7 @@ export class OnboardingService {
    * @param sessionId the owning session id
    * @param requestHash the hash of the current request
    * @param state the response to store for replay
+   * @param statusCode the HTTP status the write returned
    * @returns resolves once persisted
    */
   private async storeIdempotency(
@@ -217,6 +464,7 @@ export class OnboardingService {
     sessionId: string,
     requestHash: string,
     state: SessionStateDto,
+    statusCode: number,
   ): Promise<void> {
     await this.idempotencyKeys.create(
       {
@@ -224,7 +472,7 @@ export class OnboardingService {
         sessionId,
         requestHash,
         response: state,
-        statusCode: RETRY_STATUS_CODE,
+        statusCode,
       },
       manager,
     );
@@ -254,6 +502,25 @@ export class OnboardingService {
    */
   private hashRetryRequest(sessionId: string): string {
     return createHash('sha256').update(`POST:retry:${sessionId}`).digest('hex');
+  }
+
+  /**
+   * Hashes a submit request's identity (session, question, value, version) so a replay with the
+   * same key + same body returns the stored state, while a different body ⇒ 422 (spec §6).
+   * @param sessionId the session being answered
+   * @param questionId the question being answered
+   * @param value the answer value
+   * @param expectedVersion the client's last-observed version
+   * @returns a stable hash of the submit operation
+   */
+  private hashSubmitRequest(
+    sessionId: string,
+    questionId: string,
+    value: unknown,
+    expectedVersion: number,
+  ): string {
+    const body = JSON.stringify({ questionId, value, expectedVersion });
+    return createHash('sha256').update(`POST:answers:${sessionId}:${body}`).digest('hex');
   }
 
   /**
