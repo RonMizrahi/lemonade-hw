@@ -39,3 +39,8 @@ frontend/dist/
 # TypeScript build info
 **/*.tsbuildinfo
 backend/dist/
+
+# Claude Code local settings + tooling artifacts
+.claude/settings.local.json
+.claude/worktrees/
+.playwright-mcp/

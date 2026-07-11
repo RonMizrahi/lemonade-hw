@@ -70,14 +70,14 @@ describe('QuestionInput per-type rendering + normalization', () => {
       <QuestionInput question={makeQuestion('property_address', 'address')} onSubmit={onSubmit} />,
     );
 
-    await userEvent.type(screen.getByLabelText('line1'), '1 Main St');
+    await userEvent.type(screen.getByLabelText('street'), '1 Main St');
     await userEvent.type(screen.getByLabelText('city'), 'Springfield');
     await userEvent.type(screen.getByLabelText('state'), 'IL');
     await userEvent.type(screen.getByLabelText('postalCode'), '62704');
     await userEvent.click(screen.getByRole('button', { name: /continue/i }));
 
     expect(onSubmit).toHaveBeenCalledWith({
-      line1: '1 Main St',
+      street: '1 Main St',
       city: 'Springfield',
       state: 'IL',
       postalCode: '62704',
@@ -101,7 +101,7 @@ describe('QuestionInput per-type rendering + normalization', () => {
       <QuestionInput question={makeQuestion('property_address', 'address')} onSubmit={onSubmit} />,
     );
 
-    await userEvent.type(screen.getByLabelText('line1'), '1 Main St');
+    await userEvent.type(screen.getByLabelText('street'), '1 Main St');
     // City/state/postal left blank → submit stays disabled.
     expect(screen.getByRole('button', { name: /continue/i })).toBeDisabled();
     expect(onSubmit).not.toHaveBeenCalled();

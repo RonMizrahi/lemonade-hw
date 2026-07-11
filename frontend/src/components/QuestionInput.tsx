@@ -7,13 +7,13 @@ import { choiceLabel, questionPrompt } from '../wizard/labels';
  * address DTO expects; kept structured (not a single string) so it round-trips on edit.
  */
 export interface AddressValue {
-  line1: string;
+  street: string;
   city: string;
   state: string;
   postalCode: string;
 }
 
-const EMPTY_ADDRESS: AddressValue = { line1: '', city: '', state: '', postalCode: '' };
+const EMPTY_ADDRESS: AddressValue = { street: '', city: '', state: '', postalCode: '' };
 
 /**
  * Coerces an unknown stored value into an {@link AddressValue} for editing an address answer.
@@ -24,7 +24,7 @@ function toAddressValue(value: unknown): AddressValue {
   if (value && typeof value === 'object') {
     const v = value as Partial<AddressValue>;
     return {
-      line1: v.line1 ?? '',
+      street: v.street ?? '',
       city: v.city ?? '',
       state: v.state ?? '',
       postalCode: v.postalCode ?? '',
@@ -180,11 +180,11 @@ export function QuestionInput({ question, initialValue, disabled, onSubmit }: Qu
         return (
           <div style={{ display: 'grid', gap: '0.5rem' }}>
             <input
-              aria-label="line1"
+              aria-label="street"
               placeholder="Street address"
-              value={address.line1}
+              value={address.street}
               disabled={disabled}
-              onChange={(e) => setAddress((a) => ({ ...a, line1: e.target.value }))}
+              onChange={(e) => setAddress((a) => ({ ...a, street: e.target.value }))}
             />
             <input
               aria-label="city"

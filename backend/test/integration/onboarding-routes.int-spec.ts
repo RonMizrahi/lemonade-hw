@@ -204,6 +204,36 @@ describe('Onboarding answer flow (Testcontainers Postgres)', () => {
       expectErrorShape(res.body, UNPROCESSABLE);
     });
 
+    it('handles two concurrent submits with the same key + body (no 500; one write)', async () => {
+      // Regression for QA finding S2: a concurrent duplicate that loses the idempotency-key /
+      // answer unique-constraint race must replay the winner's response, not surface a 500 (§6).
+      const { id, version } = await startSession();
+      const key = randomUUID();
+
+      const [a, b] = await Promise.all([
+        submit(id, 'full_name', 'Jane Doe', version, key),
+        submit(id, 'full_name', 'Jane Doe', version, key),
+      ]);
+
+      expect([a.status, b.status]).toEqual([OK, OK]);
+      expect(a.body).toEqual(b.body);
+      const answers = await dataSource.getRepository(Answer).find({ where: { sessionId: id } });
+      expect(answers).toHaveLength(1);
+    });
+
+    it('rejects a concurrent same-key request with a different body (422, never 500)', async () => {
+      const { id, version } = await startSession();
+      const key = randomUUID();
+
+      const results = await Promise.all([
+        submit(id, 'full_name', 'Jane Doe', version, key),
+        submit(id, 'full_name', 'Someone Else', version, key),
+      ]);
+
+      const statuses = results.map((r) => r.status).sort((x, y) => x - y);
+      expect(statuses).toEqual([OK, UNPROCESSABLE]);
+    });
+
     it('answering property_address creates the external_lookup + outbox_event atomically', async () => {
       const { id, version } = await startSession();
       let v = version;

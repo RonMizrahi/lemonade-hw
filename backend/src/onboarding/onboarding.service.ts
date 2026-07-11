@@ -132,7 +132,7 @@ export class OnboardingService {
     context: WriteContext,
   ): Promise<SessionStateDto> {
     const requestHash = this.hashSubmitRequest(sessionId, questionId, value, expectedVersion);
-    return this.dataSource.transaction(async (manager) => {
+    return this.runIdempotent(context.idempotencyKey, requestHash, async (manager) => {
       const replay = await this.replayIfPresent(manager, context.idempotencyKey, requestHash);
       if (replay) {
         return replay;
@@ -220,7 +220,7 @@ export class OnboardingService {
    */
   async retryLookup(sessionId: string, context: WriteContext): Promise<SessionStateDto> {
     const requestHash = this.hashRetryRequest(sessionId);
-    return this.dataSource.transaction(async (manager) => {
+    return this.runIdempotent(context.idempotencyKey, requestHash, async (manager) => {
       const replay = await this.replayIfPresent(manager, context.idempotencyKey, requestHash);
       if (replay) {
         return replay;
@@ -573,6 +573,50 @@ export class OnboardingService {
       },
       manager,
     );
+  }
+
+  /**
+   * Runs an idempotent write in a transaction. If a concurrent request with the same
+   * `Idempotency-Key` won the unique-constraint race (Postgres 23505), the winner has already
+   * committed — including its idempotency row — so replay that stored response instead of
+   * surfacing a 500 (spec §6). Any other error is rethrown unchanged.
+   * @param key the `Idempotency-Key` header value
+   * @param requestHash the hash of the current request
+   * @param work the transactional operation to run
+   * @returns the operation's state, or the winning request's replayed state on a lost race
+   * @throws UnprocessableEntityException when the winning request used the key with a different body
+   */
+  private async runIdempotent(
+    key: string,
+    requestHash: string,
+    work: (manager: EntityManager) => Promise<SessionStateDto>,
+  ): Promise<SessionStateDto> {
+    try {
+      return await this.dataSource.transaction(work);
+    } catch (err) {
+      if (this.isUniqueViolation(err)) {
+        const existing = await this.idempotencyKeys.findByKey(key);
+        if (existing) {
+          if (existing.requestHash !== requestHash) {
+            throw new UnprocessableEntityException(
+              'Idempotency-Key reused with a different request',
+            );
+          }
+          return this.toSessionState(existing.response);
+        }
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Detects a Postgres unique-violation (SQLSTATE 23505) surfaced by TypeORM's QueryFailedError.
+   * @param err the caught error
+   * @returns whether the error is a unique-constraint violation
+   */
+  private isUniqueViolation(err: unknown): boolean {
+    const e = err as { code?: string; driverError?: { code?: string } };
+    return e?.code === '23505' || e?.driverError?.code === '23505';
   }
 
   /**
