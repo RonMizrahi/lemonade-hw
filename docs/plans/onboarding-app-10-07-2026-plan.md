@@ -141,7 +141,21 @@ name the work and the section to follow.
 - **E2E (Playwright — the UI critical journey, per `testing-standards` for UI projects):** start → homeowner branch → address triggers the lookup badge → keep answering while loading → badge reaches completed → complete → summary shown. One money-path journey.
 - **`code-quality-pipeline`** step.
 
-### M8 — Ops, CI & Docs  ·  *runs last (needs assembled app)*
+### M8 — Ops, CI & Docs  ·  *runs last (needs assembled app)*  ·  **[DONE]**
+> **Verification (2026-07-11):** `npm run build` ✓, `npm run test:e2e` ✓ (2 passed), backend
+> lint ✓, frontend `npm run test` ✓ (37 passed). Full `docker compose up --build` smoke ran:
+> db+redis+api+worker+frontend healthy; api ran migrations+seed on boot; the outbox→queue→worker
+> lookup pipeline completed end-to-end (`not_started→loading→completed` while the customer kept
+> answering); `/docs`, api+worker `/metrics`, and the SPA (:8080) all 200; nginx proxied
+> `/onboarding` to the api. `docker compose --profile observability up` valid — Prometheus scraped
+> both `onboarding-api` and `onboarding-worker` targets `up`, Grafana healthy. Code review (2
+> parallel reviewers on the diff): 0 findings.
+> **Key decisions:** (1) The SPA client uses relative `/onboarding` paths, so the frontend nginx
+> reverse-proxies `/onboarding`, `/docs`, `/metrics` to `api:3000` (same-origin, no CORS needed).
+> (2) The compose `api` command runs migrations + seed against the **compiled** `dist/` (typeorm
+> CLI + `node dist/database/seed.js`) rather than the ts-node npm scripts, keeping the slim
+> production image devDependency-free (`npm prune --omit=dev`).
+
 **Implementation steps**
 1. Finalize `docker-compose.yml` (db+redis+api+worker+frontend; migrations+seed on boot; optional `observability` profile: prometheus+grafana); Dockerfiles + `nginx.conf`.
 2. `seed` script — real `FlowVersion` registration (idempotent).
