@@ -32,12 +32,15 @@ const CHOICE_LABELS: Record<string, string> = {
 };
 
 /**
- * De-slugifies an id into Title Case as a readable fallback (e.g. `year_built` → `Year Built`).
+ * De-slugifies an id into Title Case as a readable fallback. Handles both snake_case
+ * (`year_built` → `Year Built`) and camelCase (`propertyData` → `Property Data`), so summary
+ * keys returned by the backend read naturally too.
  * @param id the raw identifier
  * @returns a Title-Cased label
  */
 function humanize(id: string): string {
   return id
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .split(/[_\s]+/)
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
@@ -79,4 +82,24 @@ export function choiceLabel(value: string): string {
  */
 export function isChoiceValue(value: string): boolean {
   return value in CHOICE_LABELS;
+}
+
+/** Natural display order for address parts (Postgres jsonb doesn't preserve key order). */
+const ADDRESS_ORDER = ['street', 'city', 'state', 'postalCode'];
+
+/**
+ * Entries of an object in a sensible display order: known address parts first (street → city →
+ * state → postal), then any remaining keys as-is. Keeps rendered addresses readable regardless of
+ * the order the store returns object keys in.
+ * @param obj the object to order
+ * @returns `[key, value]` pairs in display order
+ */
+export function orderedEntries(obj: Record<string, unknown>): [string, unknown][] {
+  const keys = Object.keys(obj);
+  if (!keys.some((k) => ADDRESS_ORDER.includes(k))) {
+    return Object.entries(obj);
+  }
+  const known = ADDRESS_ORDER.filter((k) => k in obj);
+  const rest = keys.filter((k) => !ADDRESS_ORDER.includes(k));
+  return [...known, ...rest].map((k) => [k, obj[k]] as [string, unknown]);
 }

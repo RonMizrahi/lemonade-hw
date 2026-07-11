@@ -1,5 +1,5 @@
 import type { AnsweredQuestion } from '../api/types';
-import { choiceLabel, isChoiceValue, questionLabel } from '../wizard/labels';
+import { choiceLabel, isChoiceValue, orderedEntries, questionLabel } from '../wizard/labels';
 
 interface AnswerListProps {
   answers: AnsweredQuestion[];
@@ -23,7 +23,8 @@ function displayValue(value: unknown): string {
     return isChoiceValue(value) ? choiceLabel(value) : value;
   }
   if (value && typeof value === 'object') {
-    return Object.values(value as Record<string, unknown>)
+    return orderedEntries(value as Record<string, unknown>)
+      .map(([, v]) => v)
       .filter((v) => v !== '' && v !== null && v !== undefined)
       .join(', ');
   }
@@ -42,28 +43,30 @@ export function AnswerList({ answers, editingQuestionId, disabled, onEdit }: Ans
   }
 
   return (
-    <section aria-label="answered-questions" style={{ marginTop: '1.5rem' }}>
-      <h3 style={{ fontSize: '0.9rem', textTransform: 'uppercase', color: '#6b7280' }}>
-        Your answers
-      </h3>
-      <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: '0.4rem' }}>
-        {active.map((answer) => (
-          <li
-            key={answer.questionId}
-            style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem' }}
-          >
-            <span>
-              <strong>{questionLabel(answer.questionId)}:</strong> {displayValue(answer.value)}
-            </span>
-            <button
-              type="button"
-              disabled={disabled || editingQuestionId === answer.questionId}
-              onClick={() => onEdit(answer.questionId)}
+    <section className="answers" aria-label="answered-questions">
+      <h3 className="answers__title">Your answers</h3>
+      <ul className="answers__list">
+        {active.map((answer) => {
+          const editing = editingQuestionId === answer.questionId;
+          return (
+            <li
+              key={answer.questionId}
+              className={`answers__item${editing ? ' answers__item--editing' : ''}`}
             >
-              Edit
-            </button>
-          </li>
-        ))}
+              <span className="answers__label">{questionLabel(answer.questionId)}</span>
+              <span className="answers__value">{displayValue(answer.value)}</span>
+              <button
+                type="button"
+                className="btn btn--link"
+                aria-label={`Edit ${questionLabel(answer.questionId)}`}
+                disabled={disabled || editing}
+                onClick={() => onEdit(answer.questionId)}
+              >
+                Edit
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
