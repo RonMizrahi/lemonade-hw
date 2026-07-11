@@ -1,10 +1,23 @@
 import { AppDataSource } from './data-source';
-import { FlowVersion } from './entities';
-import { ACTIVE_FLOW_VERSION } from '../flow-engine/flow-definition';
+import { FlowVersion, FlowDefinitionSnapshot } from './entities';
+import { ACTIVE_FLOW_VERSION, FLOW_DEFINITION } from '../flow-engine/flow-definition';
 
 /**
- * Registers the active {@link FlowVersion} row idempotently (spec §11). Safe to run on every
- * boot and via `npm run seed`. M2 expands the serialized `definition` snapshot.
+ * Builds the serialized structural snapshot persisted alongside the active version. The
+ * executable predicates live in code; the snapshot records the version + declared question ids
+ * (presentation order) as metadata for auditing which flow a session was pinned to (spec §5).
+ * @returns the snapshot for the active flow definition.
+ */
+function buildFlowSnapshot(): FlowDefinitionSnapshot {
+  return {
+    version: FLOW_DEFINITION.version,
+    questionIds: FLOW_DEFINITION.questions.map((question) => question.id),
+  };
+}
+
+/**
+ * Registers the active {@link FlowVersion} row idempotently from the real flow definition
+ * (spec §11). Safe to run on every boot and via `npm run seed`.
  * @returns resolves once the active version exists.
  */
 export async function seed(): Promise<void> {
@@ -17,7 +30,7 @@ export async function seed(): Promise<void> {
     await repo.save(
       repo.create({
         version: ACTIVE_FLOW_VERSION,
-        definition: { version: ACTIVE_FLOW_VERSION, questionIds: [] },
+        definition: buildFlowSnapshot(),
       }),
     );
 

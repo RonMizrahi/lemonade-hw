@@ -1,7 +1,13 @@
-# Onboarding App — Docker Compose skeleton.
-# M1 defines db + redis (usable now for local dev) and stubs api/worker/frontend service
-# shapes. M8 finalizes the app service builds (Dockerfiles, migrations+seed on boot, nginx)
-# and the optional `observability` profile (prometheus + grafana).
+# Onboarding App — full stack (spec §11).
+#
+# `docker compose up --build` brings up db + redis + api + worker + frontend.
+# The api container runs migrations + seed, then starts the HTTP server; the worker runs the
+# OutboxRelay + BullMQ consumer off the same image. The frontend (nginx) serves the built SPA
+# and reverse-proxies /onboarding, /docs, /metrics to the api.
+#
+# Optional observability stack (off by default):
+#   docker compose --profile observability up
+# adds Prometheus (scraping api + worker /metrics per ops/prometheus.yml) and Grafana.
 
 services:
   db:
@@ -30,27 +36,118 @@ services:
       timeout: 5s
       retries: 10
 
-  # ── App services below are finalized in M8 (Dockerfiles not yet present). ──
-  # api:
-  #   build: { context: ./backend }
-  #   command: sh -c "npm run migration:run && npm run seed && npm run start:prod"
-  #   environment: [ ... from .env ... ]
-  #   depends_on:
-  #     db: { condition: service_healthy }
-  #     redis: { condition: service_healthy }
-  #   ports: ['3000:3000']   # /docs, /metrics
-  #
-  # worker:
-  #   build: { context: ./backend }
-  #   command: npm run start:worker
-  #   depends_on:
-  #     db: { condition: service_healthy }
-  #     redis: { condition: service_healthy }
-  #   ports: ['3001:3001']   # worker /metrics
-  #
-  # frontend:
-  #   build: { context: ./frontend }
-  #   ports: ['8080:80']     # nginx-served static SPA
+  # API process (HTTP). Runs compiled migrations + seed, then starts main.js. Migrations and
+  # seed run against the compiled dist/ (the ts-node npm scripts aren't available in the slim
+  # prod image), keeping the runtime image devDependency-free.
+  api:
+    build:
+      context: ./backend
+    command: >
+      sh -c "node node_modules/typeorm/cli.js migration:run -d dist/database/data-source.js
+      && node dist/database/seed.js
+      && node dist/main.js"
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      HTTP_PORT: 3000
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USERNAME: ${DB_USERNAME:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_NAME: ${DB_NAME:-onboarding}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      EXTERNAL_LOOKUP_MAX_TRIGGERS: ${EXTERNAL_LOOKUP_MAX_TRIGGERS:-3}
+      OUTBOX_POLL_INTERVAL_MS: ${OUTBOX_POLL_INTERVAL_MS:-500}
+      LOOKUP_DELAY_MIN_MS: ${LOOKUP_DELAY_MIN_MS:-3000}
+      LOOKUP_DELAY_MAX_MS: ${LOOKUP_DELAY_MAX_MS:-8000}
+      LOOKUP_FAILURE_RATE: ${LOOKUP_FAILURE_RATE:-0.1}
+      LOOKUP_JOB_ATTEMPTS: ${LOOKUP_JOB_ATTEMPTS:-3}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - '${HTTP_PORT:-3000}:3000' # /onboarding, /docs, /metrics
+    healthcheck:
+      # /metrics answers 200 as soon as the HTTP server is listening — a reliable liveness probe.
+      test:
+        ['CMD', 'node', '-e', "require('http').get('http://localhost:3000/metrics',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Worker process (OutboxRelay + BullMQ consumer). Same image, different entrypoint. Exposes
+  # its own /metrics on WORKER_METRICS_PORT. Does not run migrations — the api owns schema setup.
+  worker:
+    build:
+      context: ./backend
+    command: ['node', 'dist/main.worker.js']
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      WORKER_METRICS_PORT: 3001
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USERNAME: ${DB_USERNAME:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_NAME: ${DB_NAME:-onboarding}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      EXTERNAL_LOOKUP_MAX_TRIGGERS: ${EXTERNAL_LOOKUP_MAX_TRIGGERS:-3}
+      OUTBOX_POLL_INTERVAL_MS: ${OUTBOX_POLL_INTERVAL_MS:-500}
+      LOOKUP_DELAY_MIN_MS: ${LOOKUP_DELAY_MIN_MS:-3000}
+      LOOKUP_DELAY_MAX_MS: ${LOOKUP_DELAY_MAX_MS:-8000}
+      LOOKUP_FAILURE_RATE: ${LOOKUP_FAILURE_RATE:-0.1}
+      LOOKUP_JOB_ATTEMPTS: ${LOOKUP_JOB_ATTEMPTS:-3}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy # api runs migrations first; worker starts after schema exists
+    ports:
+      - '${WORKER_METRICS_PORT:-3001}:3001' # worker /metrics
+
+  # Static SPA (nginx). Serves the built Vite bundle and reverse-proxies the API path to `api`.
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - '${FRONTEND_PORT:-8080}:80'
+
+  # ── Optional observability profile (docker compose --profile observability up) ──
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    profiles: ['observability']
+    volumes:
+      - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - '${PROMETHEUS_PORT:-9090}:9090'
+    depends_on:
+      - api
+      - worker
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    profiles: ['observability']
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - '${GRAFANA_PORT:-3300}:3000'
+    depends_on:
+      - prometheus
 
 volumes:
   db_data:
+  grafana_data:

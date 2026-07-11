@@ -1,0 +1,11 @@
+# Grafana datasource provisioning (observability profile). Auto-wires Prometheus as the default
+# datasource so the dashboards work out of the box against the api + worker /metrics scrapes.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true

@@ -1,6 +1,6 @@
-# CI skeleton (spec §11 bonus). M8 finalizes (adds e2e + full compose smoke).
-# Testcontainers brings up Postgres + Redis inside the runner (Docker is available on
-# GitHub-hosted runners), so no service containers are declared here.
+# CI (spec §11 bonus). Backend: install → lint → build → unit → integration → e2e.
+# Testcontainers brings up real Postgres + Redis inside the runner (Docker is available on
+# GitHub-hosted runners), so no service containers are declared here. Frontend: build + test.
 
 name: CI
 
@@ -26,7 +26,9 @@ jobs:
       - run: npm run lint
       - run: npm run build
       - run: npm run test:unit
+      # Integration + e2e spin up Postgres + Redis via Testcontainers (real infra in the runner).
       - run: npm run test:integration
+      - run: npm run test:e2e
 
   frontend:
     runs-on: ubuntu-latest
@@ -42,3 +44,4 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run build
+      - run: npm run test

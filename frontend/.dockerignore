@@ -1,0 +1,13 @@
+# Keep the build context small (node_modules + dist are rebuilt inside the image).
+node_modules
+dist
+coverage
+.vite
+*.tsbuildinfo
+.env
+.env.*
+npm-debug.log*
+.git
+.DS_Store
+Dockerfile
+.dockerignore
