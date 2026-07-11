@@ -2,11 +2,13 @@ import { useCallback, useMemo, useReducer } from 'react';
 import { OnboardingClient } from './api/client';
 import type { Question, SessionState } from './api/types';
 import { AnswerList } from './components/AnswerList';
+import { JourneyRail } from './components/JourneyRail';
 import { LookupBadge } from './components/LookupBadge';
 import { QuestionInput } from './components/QuestionInput';
 import { SummaryView } from './components/SummaryView';
 import { useLookupPolling } from './hooks/useLookupPolling';
 import { questionDescriptor } from './wizard/flow';
+import { questionLabel } from './wizard/labels';
 import {
   activeQuestionId,
   initialWizardState,
@@ -119,36 +121,72 @@ export default function App({ client: injectedClient }: AppProps = {}) {
   });
 
   return (
-    <main style={{ fontFamily: 'system-ui, sans-serif', padding: '2rem', maxWidth: 640 }}>
-      <h1>Onboarding</h1>
+    <div className="app">
+      <div className="app-shell">
+        <div>
+          <div className="brand">
+            <span className="brand__mark" aria-hidden="true" />
+            <span className="brand__name">
+              Cover<span>note</span>
+            </span>
+          </div>
+          {state.session && <JourneyRail session={state.session} />}
+        </div>
 
-      {state.error && (
-        <p role="alert" style={{ color: '#b91c1c' }}>
-          {state.error}
-        </p>
-      )}
+        <main className="stage">
+          {state.error && (
+            <p role="alert" className="alert">
+              {state.error}
+            </p>
+          )}
 
-      {state.phase === 'idle' && (
-        <button type="button" onClick={handleStart} disabled={state.busy}>
-          Start
-        </button>
-      )}
+          {state.phase === 'idle' && (
+            <section className="hero">
+              <p className="eyebrow">Home &amp; renters insurance</p>
+              <h1 className="hero__title">Let&rsquo;s get you covered.</h1>
+              <p className="hero__lede">
+                A handful of quick questions &mdash; and while you answer, we&rsquo;ll pull your
+                property details in the background. About a minute, no login.
+              </p>
+              <button
+                type="button"
+                className="btn btn--primary"
+                onClick={handleStart}
+                disabled={state.busy}
+              >
+                Start
+              </button>
+              <div className="hero__meta">
+                <div>
+                  <b>~1 min</b>to finish
+                </div>
+                <div>
+                  <b>Live</b>property lookup
+                </div>
+                <div>
+                  <b>Editable</b>change any answer
+                </div>
+              </div>
+            </section>
+          )}
 
-      {state.phase === 'active' && state.session && (
-        <ActiveWizard
-          state={state}
-          onAnswer={handleAnswer}
-          onEdit={(id) => dispatch({ type: 'EDIT_ANSWER', questionId: id })}
-          onCancelEdit={() => dispatch({ type: 'CANCEL_EDIT' })}
-          onRetry={handleRetry}
-          onComplete={handleComplete}
-        />
-      )}
+          {state.phase === 'active' && state.session && (
+            <ActiveWizard
+              state={state}
+              onAnswer={handleAnswer}
+              onEdit={(id) => dispatch({ type: 'EDIT_ANSWER', questionId: id })}
+              onCancelEdit={() => dispatch({ type: 'CANCEL_EDIT' })}
+              onRetry={handleRetry}
+              onComplete={handleComplete}
+            />
+          )}
 
-      {state.phase === 'done' && state.session?.summary && (
-        <SummaryView summary={state.session.summary} />
-      )}
-    </main>
+          {state.phase === 'done' && state.session?.summary && (
+            <SummaryView summary={state.session.summary} />
+          )}
+        </main>
+      </div>
+    </div>
   );
 }
 
@@ -180,23 +218,22 @@ function ActiveWizard({
 
   return (
     <>
-      <div style={{ margin: '1rem 0' }}>
-        <LookupBadge
-          lookup={lookup}
-          canRetry={lookup.status === 'failed' && !state.busy}
-          onRetry={onRetry}
-        />
-      </div>
+      <LookupBadge lookup={lookup} busy={state.busy} onRetry={onRetry} />
 
       {questionId ? (
-        <section aria-label={isEditing ? 'edit-question' : 'current-question'}>
+        <section className="card" aria-label={isEditing ? 'edit-question' : 'current-question'}>
           {isEditing && (
-            <p style={{ color: '#6b7280' }}>
-              Editing a previous answer.{' '}
-              <button type="button" onClick={onCancelEdit} disabled={state.busy}>
+            <div className="editbar">
+              <span>Editing a previous answer</span>
+              <button
+                type="button"
+                className="btn btn--link"
+                onClick={onCancelEdit}
+                disabled={state.busy}
+              >
                 Cancel
               </button>
-            </p>
+            </div>
           )}
           <QuestionInput
             key={questionId}
@@ -207,7 +244,9 @@ function ActiveWizard({
           />
         </section>
       ) : (
-        <p>All questions answered.</p>
+        <section className="card">
+          <p className="q__prompt">Everything&rsquo;s answered &mdash; you&rsquo;re ready to review.</p>
+        </section>
       )}
 
       <AnswerList
@@ -217,17 +256,18 @@ function ActiveWizard({
         onEdit={onEdit}
       />
 
-      <div style={{ marginTop: '1.5rem' }}>
+      <div className="finish">
         <button
           type="button"
+          className="btn btn--primary"
           onClick={onComplete}
           disabled={!session.completion.canComplete || state.busy}
         >
           Complete
         </button>
         {!session.completion.canComplete && session.completion.missingRequired.length > 0 && (
-          <p style={{ color: '#6b7280', fontSize: '0.85rem' }}>
-            Still needed: {session.completion.missingRequired.join(', ')}
+          <p className="finish__hint">
+            A few more to go: <b>{session.completion.missingRequired.map(questionLabel).join(', ')}</b>
           </p>
         )}
       </div>

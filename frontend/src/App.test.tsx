@@ -47,9 +47,9 @@ describe('App — money-path onboarding journey (mocked API)', () => {
     await user.type(screen.getByLabelText('postalCode'), '62704');
     await user.click(screen.getByRole('button', { name: /continue/i }));
 
-    // The badge shows the lookup is in progress right after the address is submitted.
+    // The badge shows the lookup is running right after the address is submitted.
     const badge = await screen.findByRole('status');
-    expect(badge).toHaveTextContent(/in progress/i);
+    expect(badge).toHaveTextContent(/checking/i);
 
     // Keep answering unrelated questions WHILE the lookup runs in the background.
     const yearInput = await screen.findByLabelText('year_built');
@@ -64,8 +64,8 @@ describe('App — money-path onboarding journey (mocked API)', () => {
     await user.click(earthquakeYes);
     await user.click(screen.getByRole('button', { name: /continue/i }));
 
-    // Background polling flips the badge to completed.
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/completed/i), {
+    // Background polling flips the badge to the "found" (completed) state.
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/found/i), {
       timeout: 5000,
     });
 

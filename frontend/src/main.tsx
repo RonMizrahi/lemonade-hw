@@ -1,3 +1,6 @@
+import '@fontsource-variable/inter';
+import '@fontsource-variable/fraunces';
+import './styles/theme.css';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';

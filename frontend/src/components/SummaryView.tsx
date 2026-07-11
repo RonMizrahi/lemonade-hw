@@ -1,4 +1,4 @@
-import { choiceLabel, isChoiceValue, questionLabel } from '../wizard/labels';
+import { choiceLabel, isChoiceValue, orderedEntries, questionLabel } from '../wizard/labels';
 
 interface SummaryViewProps {
   summary: Record<string, unknown>;
@@ -28,7 +28,7 @@ function renderValue(value: unknown): string {
     return value.map(renderValue).join(', ');
   }
   if (typeof value === 'object') {
-    return Object.entries(value as Record<string, unknown>)
+    return orderedEntries(value as Record<string, unknown>)
       .map(([k, v]) => `${questionLabel(k)}: ${renderValue(v)}`)
       .join(', ');
   }
@@ -36,29 +36,36 @@ function renderValue(value: unknown): string {
 }
 
 /**
- * The completed-session summary view. The backend returns a normalized `summary` object
- * (spec §9) keyed by field; this renders each top-level entry as a labelled row without
- * assuming a fixed shape, so it stays robust to summary changes.
+ * The completed-session "cover note": the backend returns a normalized `summary` object
+ * (spec §9) keyed by field; this renders each top-level entry as a receipt row without assuming
+ * a fixed shape, so it stays robust to summary changes.
  */
 export function SummaryView({ summary }: SummaryViewProps) {
   const entries = Object.entries(summary);
 
   return (
-    <section aria-label="summary">
-      <h2>You're all set</h2>
-      <p>Your onboarding is complete. Here's a summary of your answers:</p>
-      {entries.length === 0 ? (
-        <p>No summary details available.</p>
-      ) : (
-        <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.5rem 1rem' }}>
-          {entries.map(([key, value]) => (
-            <div key={key} style={{ display: 'contents' }}>
-              <dt style={{ fontWeight: 600 }}>{questionLabel(key)}</dt>
-              <dd style={{ margin: 0 }}>{renderValue(value)}</dd>
-            </div>
-          ))}
-        </dl>
-      )}
+    <section className="cover" aria-label="summary">
+      <div className="cover__card">
+        <div className="cover__head">
+          <span className="cover__seal">Cover note</span>
+          <h2 className="cover__title">You're all set</h2>
+          <p className="cover__sub">Here's everything we put on file for your cover.</p>
+        </div>
+        <div className="cover__body">
+          {entries.length === 0 ? (
+            <p>No summary details available.</p>
+          ) : (
+            <dl className="cover__grid">
+              {entries.map(([key, value]) => (
+                <div key={key} className="cover__row">
+                  <dt className="cover__dt">{questionLabel(key)}</dt>
+                  <dd className="cover__dd">{renderValue(value)}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </div>
+      </div>
     </section>
   );
 }

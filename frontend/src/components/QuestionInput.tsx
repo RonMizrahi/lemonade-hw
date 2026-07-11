@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
 import type { Question } from '../api/types';
 import { choiceLabel, questionPrompt } from '../wizard/labels';
+import { sectionLabelForQuestion } from '../wizard/sections';
 
 /**
  * The value shape the wizard submits for an `address` question. Matches what the backend's
- * address DTO expects; kept structured (not a single string) so it round-trips on edit.
+ * address validation expects (`street` + `city`); kept structured so it round-trips on edit.
  */
 export interface AddressValue {
   street: string;
@@ -59,7 +60,7 @@ interface QuestionInputProps {
  * Renders the input for a single question, dispatching on `question.type`, and normalizes the
  * raw input into the value the API expects:
  * - `number`  → JS number
- * - `boolean` → true/false (radio)
+ * - `boolean` → true/false (segmented radios)
  * - `choice`  → the selected choice string
  * - `address` → an {@link AddressValue} object
  * - `text` / `date` → the string as typed
@@ -75,6 +76,7 @@ export function QuestionInput({ question, initialValue, disabled, onSubmit }: Qu
   const [address, setAddress] = useState<AddressValue>(() => toAddressValue(initialValue));
 
   const prompt = useMemo(() => questionPrompt(question.id), [question.id]);
+  const section = useMemo(() => sectionLabelForQuestion(question.id), [question.id]);
 
   /**
    * Normalizes the current draft into the submit value for this question type, or null if the
@@ -116,15 +118,18 @@ export function QuestionInput({ question, initialValue, disabled, onSubmit }: Qu
   const canSubmit = value !== null && !disabled;
 
   return (
-    <form onSubmit={handleSubmit} aria-label={`question-${question.id}`}>
-      <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.75rem' }}>
-        {prompt}
-      </label>
+    <form className="q" onSubmit={handleSubmit} aria-label={`question-${question.id}`}>
+      {section && (
+        <div className="q__eyebrow">
+          <span className="q__section">{section}</span>
+        </div>
+      )}
+      <p className="q__prompt">{prompt}</p>
 
-      {renderControl()}
+      <div className="field">{renderControl()}</div>
 
-      <div style={{ marginTop: '1rem' }}>
-        <button type="submit" disabled={!canSubmit}>
+      <div className="q__actions">
+        <button type="submit" className="btn btn--primary" disabled={!canSubmit}>
           Continue
         </button>
       </div>
@@ -136,6 +141,7 @@ export function QuestionInput({ question, initialValue, disabled, onSubmit }: Qu
       case 'choice':
         return (
           <select
+            className="control"
             aria-label={question.id}
             value={scalar}
             disabled={disabled}
@@ -152,56 +158,72 @@ export function QuestionInput({ question, initialValue, disabled, onSubmit }: Qu
 
       case 'boolean':
         return (
-          <fieldset style={{ border: 'none', padding: 0, margin: 0 }}>
-            <label style={{ marginRight: '1rem' }}>
-              <input
-                type="radio"
-                name={question.id}
-                checked={bool === true}
-                disabled={disabled}
-                onChange={() => setBool(true)}
-              />{' '}
-              Yes
-            </label>
-            <label>
-              <input
-                type="radio"
-                name={question.id}
-                checked={bool === false}
-                disabled={disabled}
-                onChange={() => setBool(false)}
-              />{' '}
-              No
-            </label>
+          <fieldset className="choices-group">
+            <legend className="visually-hidden">{prompt}</legend>
+            <div className="choices">
+              <label className="choice">
+                <input
+                  type="radio"
+                  name={question.id}
+                  checked={bool === true}
+                  disabled={disabled}
+                  onChange={() => setBool(true)}
+                />
+                Yes
+              </label>
+              <label className="choice">
+                <input
+                  type="radio"
+                  name={question.id}
+                  checked={bool === false}
+                  disabled={disabled}
+                  onChange={() => setBool(false)}
+                />
+                No
+              </label>
+            </div>
           </fieldset>
         );
 
       case 'address':
         return (
-          <div style={{ display: 'grid', gap: '0.5rem' }}>
+          <div className="address-grid">
             <input
+              className="control"
               aria-label="street"
+              name="street"
+              autoComplete="address-line1"
               placeholder="Street address"
               value={address.street}
               disabled={disabled}
               onChange={(e) => setAddress((a) => ({ ...a, street: e.target.value }))}
             />
             <input
+              className="control"
               aria-label="city"
+              name="city"
+              autoComplete="address-level2"
               placeholder="City"
               value={address.city}
               disabled={disabled}
               onChange={(e) => setAddress((a) => ({ ...a, city: e.target.value }))}
             />
             <input
+              className="control"
               aria-label="state"
+              name="state"
+              autoComplete="address-level1"
               placeholder="State"
               value={address.state}
               disabled={disabled}
               onChange={(e) => setAddress((a) => ({ ...a, state: e.target.value }))}
             />
             <input
+              className="control"
               aria-label="postalCode"
+              name="postalCode"
+              autoComplete="postal-code"
+              inputMode="numeric"
               placeholder="Postal code"
               value={address.postalCode}
               disabled={disabled}
@@ -213,6 +235,7 @@ export function QuestionInput({ question, initialValue, disabled, onSubmit }: Qu
       case 'number':
         return (
           <input
+            className="control"
             aria-label={question.id}
             type="number"
             value={scalar}
@@ -224,6 +247,7 @@ export function QuestionInput({ question, initialValue, disabled, onSubmit }: Qu
       case 'date':
         return (
           <input
+            className="control"
             aria-label={question.id}
             type="date"
             value={scalar}
@@ -236,6 +260,7 @@ export function QuestionInput({ question, initialValue, disabled, onSubmit }: Qu
       default:
         return (
           <input
+            className="control"
             aria-label={question.id}
             type="text"
             value={scalar}
