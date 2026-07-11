@@ -7,6 +7,7 @@ import { OnboardingController } from './onboarding.controller';
 import { OnboardingService } from './onboarding.service';
 import { OutboxWriter } from './outbox/outbox-writer';
 import { SessionStateAssembler } from './session-state.assembler';
+import { SummaryBuilder } from './summary-builder';
 import { ALL_REPOSITORIES } from './repositories';
 
 /**
@@ -17,7 +18,13 @@ import { ALL_REPOSITORIES } from './repositories';
 @Module({
   imports: [TypeOrmModule.forFeature(ALL_ENTITIES), FlowEngineModule, AsyncLookupModule],
   controllers: [OnboardingController],
-  providers: [OnboardingService, SessionStateAssembler, OutboxWriter, ...ALL_REPOSITORIES],
+  providers: [
+    OnboardingService,
+    SessionStateAssembler,
+    SummaryBuilder,
+    OutboxWriter,
+    ...ALL_REPOSITORIES,
+  ],
   exports: [OnboardingService, SessionStateAssembler, OutboxWriter, ...ALL_REPOSITORIES],
 })
 export class OnboardingModule {}

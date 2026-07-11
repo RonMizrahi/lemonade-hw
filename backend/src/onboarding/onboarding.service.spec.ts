@@ -21,6 +21,7 @@ import {
 } from './repositories';
 import { OutboxWriter } from './outbox/outbox-writer';
 import { SessionStateAssembler } from './session-state.assembler';
+import { SummaryBuilder } from './summary-builder';
 import { SessionStateDto } from './contract';
 
 /**
@@ -77,6 +78,7 @@ describe('OnboardingService.retryLookup', () => {
       idempotencyKeys as unknown as IdempotencyKeyRepository,
       {} as OutboxWriter,
       assembler as unknown as SessionStateAssembler,
+      new SummaryBuilder(),
       trigger as unknown as LookupTriggerService,
       new FlowEngineService(),
     );
@@ -230,6 +232,7 @@ function buildService(sessionVersion = 0): {
     idempotencyKeys as unknown as IdempotencyKeyRepository,
     {} as OutboxWriter,
     assembler as unknown as SessionStateAssembler,
+    new SummaryBuilder(),
     { trigger } as unknown as LookupTriggerService,
     new FlowEngineService(),
   );

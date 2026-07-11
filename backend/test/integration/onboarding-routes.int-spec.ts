@@ -333,6 +333,84 @@ describe('Onboarding answer flow (Testcontainers Postgres)', () => {
     });
   });
 
+  describe('POST /onboarding/sessions/:id/complete', () => {
+    /** A future coverage-start date so the coverage rule passes regardless of run date. */
+    const FUTURE_START_DATE = '2099-01-01';
+
+    /**
+     * Answers the full homeowner branch (all required visible questions) over HTTP, then
+     * forces the session's external_lookup to `completed` directly in the DB (this API-only
+     * integration app runs no worker). Returns the session id and its current version.
+     */
+    async function seedCompletableSession(): Promise<{ id: string; version: number }> {
+      const { id, version } = await startSession();
+      let v = version;
+      const seq: [string, unknown][] = [
+        ['full_name', 'Jane Doe'],
+        ['date_of_birth', '1990-06-15'],
+        ['residence_type', 'own'],
+        ['property_address', VALID_ADDRESS],
+        ['year_built', 1990],
+        ['construction_type', 'brick'],
+        ['has_security_system', false],
+        ['coverage_start_date', FUTURE_START_DATE],
+        ['wants_earthquake_coverage', false],
+      ];
+      for (const [q, value] of seq) {
+        const res = await submit(id, q, value, v);
+        expect(res.status).toBe(OK);
+        v = versionOf(res.body);
+      }
+      const repo = dataSource.getRepository(ExternalLookup);
+      const lookup = await repo.findOneByOrFail({ sessionId: id });
+      lookup.status = ExternalLookupStatus.Completed;
+      lookup.result = { dataSource: 'external', estimatedValue: 500000 };
+      await repo.save(lookup);
+      return { id, version: v };
+    }
+
+    it('completes a fully-answered session with a completed lookup (200 + summary)', async () => {
+      const { id, version } = await seedCompletableSession();
+
+      const res = await request(httpServer(app))
+        .post(`/onboarding/sessions/${id}/complete`)
+        .send({ expectedVersion: version });
+
+      expect(res.status).toBe(OK);
+      expectSessionStateShape(res.body);
+      expect(res.body.status).toBe(SessionStatus.Completed);
+      expect(res.body.summary).toMatchObject({
+        personalDetails: { full_name: 'Jane Doe' },
+        residenceType: 'own',
+        propertyData: { dataSource: 'external' },
+      });
+    });
+
+    it('rejects completion when required questions are unmet (409)', async () => {
+      const { id, version } = await startSession();
+      const res1 = await submit(id, 'full_name', 'Jane Doe', version);
+      const v = versionOf(res1.body);
+
+      const res = await request(httpServer(app))
+        .post(`/onboarding/sessions/${id}/complete`)
+        .send({ expectedVersion: v });
+
+      expect(res.status).toBe(CONFLICT);
+      expectErrorShape(res.body, CONFLICT);
+    });
+
+    it('rejects a stale expectedVersion (409)', async () => {
+      const { id } = await seedCompletableSession();
+
+      const res = await request(httpServer(app))
+        .post(`/onboarding/sessions/${id}/complete`)
+        .send({ expectedVersion: 99 });
+
+      expect(res.status).toBe(CONFLICT);
+      expectErrorShape(res.body, CONFLICT);
+    });
+  });
+
   it('rejects a submit missing the Idempotency-Key header (400, error shape)', async () => {
     const res = await request(httpServer(app))
       .post(`/onboarding/sessions/${randomUUID()}/answers`)
